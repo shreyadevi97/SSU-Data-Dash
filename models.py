@@ -8,7 +8,8 @@ make_model() picks the model for each track. The two starting models are baselin
 deliberately simple, so you can measure how much your own ideas add.
 """
 import numpy as np
-from sklearn.ensemble import HistGradientBoostingRegressor
+import pandas as pd
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 
 import features
 
@@ -16,10 +17,12 @@ import features
 def make_model(track):
     """Return a fresh, untrained model for "off_market" or "list_aware"."""
     if track == "list_aware":
-        return ListPriceBaseline()
-        # return FeatureModel(features.list_aware_features)   # try this instead
-    return NearestSalesBaseline(k=10)
-    # return FeatureModel(features.off_market_features)       # try this instead
+        return RandomForest(features.list_aware_features, uses_list_price=True)
+        # return ListPriceBaseline()                                  # the baseline
+        # return FeatureModel(features.list_aware_features)           # gradient boosting
+    return RandomForest(features.off_market_features)
+    # return NearestSalesBaseline(k=10)                               # the baseline
+    # return FeatureModel(features.off_market_features)               # gradient boosting
 
 
 class ListPriceBaseline:
@@ -90,3 +93,41 @@ class FeatureModel:
 
     def predict(self, homes):
         return np.exp(self.model.predict(self.make_features(homes)))
+
+
+class RandomForest:
+    """random forest on the features in features.py.
+
+    Off-market: learns log(sold price).
+    List-aware (uses_list_price=True): learns log(sold price / list price), then
+    multiplies the list price back in, so the forest only has to learn the premium
+    or discount over the list price.
+    """
+
+    def __init__(self, make_features, uses_list_price=False):
+        self.make_features = make_features
+        self.uses_list_price = uses_list_price
+        self.model = RandomForestRegressor(
+            n_estimators=200,
+            min_samples_leaf=3,
+            max_features=0.5,
+            max_samples=0.5,    # each tree sees half the rows-- should hypothetically be faster
+                                # IDK ask google
+            n_jobs=-1,
+            random_state=0,
+        )
+
+    def fit(self, train):
+        X = self.make_features(train).fillna(-1)
+        y = np.log(train["sold_price"])
+        if self.uses_list_price:
+            y = y - np.log(train["list_price"])
+        self.model.fit(X, y)
+        return self
+
+    def predict(self, homes):
+        X = self.make_features(homes).fillna(-1)
+        log_prediction = self.model.predict(X)
+        if self.uses_list_price:
+            log_prediction = log_prediction + np.log(homes["list_price"].to_numpy(dtype=float))
+        return np.exp(log_prediction)
